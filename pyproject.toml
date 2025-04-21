@@ -60,6 +60,7 @@ crewai = ["aiqtoolkit-crewai"]
 langchain = ["aiqtoolkit-langchain"]
 llama-index = ["aiqtoolkit-llama-index"]
 mem0ai = ["aiqtoolkit-mem0ai"]
+s3-object-store = ["aiqtoolkit-s3-object-store"]
 semantic-kernel = ["aiqtoolkit-semantic-kernel"]
 telemetry = [
   "arize-phoenix~=6.1",
@@ -74,6 +75,7 @@ examples = [
   "aiq_email_phishing_analyzer",
   "aiq_multi_frameworks",
   "aiq_plot_charts",
+  "aiq_user_report",
   "aiq_semantic_kernel_demo",
   "aiq_simple_calculator",
   "aiq_simple",
@@ -100,6 +102,7 @@ aiqtoolkit-crewai = { workspace = true }
 aiqtoolkit-langchain = { workspace = true }
 aiqtoolkit-llama-index = { workspace = true }
 aiqtoolkit-mem0ai = { workspace = true }
+aiqtoolkit-s3-object-store = { workspace = true }
 aiqtoolkit-semantic-kernel = { workspace = true }
 aiqtoolkit-test = { workspace = true }
 aiqtoolkit-zep-cloud = { workspace = true }
@@ -111,6 +114,7 @@ aiq_alert_triage_agent = { path = "examples/alert_triage_agent", editable = true
 aiq_email_phishing_analyzer = { path = "examples/email_phishing_analyzer", editable = true }
 aiq_multi_frameworks = { path = "examples/multi_frameworks", editable = true }
 aiq_plot_charts = { path = "examples/plot_charts", editable = true }
+aiq_user_report = { path = "examples/object_store/user_report", editable = true }
 aiq_semantic_kernel_demo = { path = "examples/semantic_kernel_demo", editable = true }
 aiq_simple = { path = "examples/simple", editable = true }
 aiq_simple_calculator = { path = "examples/simple_calculator", editable = true }
