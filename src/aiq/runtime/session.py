@@ -15,20 +15,20 @@
 
 import asyncio
 import contextvars
-import httpx
 import typing
 from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextlib import nullcontext
 
+from aiq.authentication.interfaces import RequestManagerBase
+from aiq.authentication.interfaces import ResponseManagerBase
 from aiq.builder.context import AIQContext
 from aiq.builder.context import AIQContextState
 from aiq.builder.workflow import Workflow
 from aiq.data_models.config import AIQConfig
 from aiq.data_models.interactive import HumanResponse
 from aiq.data_models.interactive import InteractionPrompt
-from aiq.authentication.interfaces import RequestManagerBase
 
 _T = typing.TypeVar("_T")
 
@@ -87,7 +87,7 @@ class AIQSessionManager:
     async def session(self,
                       user_manager=None,
                       user_input_callback: Callable[[InteractionPrompt], Awaitable[HumanResponse]] = None,
-                      user_request_callback: Callable[[RequestManagerBase], Awaitable[httpx.Response]] = None):
+                      user_request_callback: Callable[[RequestManagerBase], Awaitable[ResponseManagerBase]] = None):
 
         token_user_input = None
         if user_input_callback is not None:
