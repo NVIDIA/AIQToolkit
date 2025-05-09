@@ -21,8 +21,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextlib import nullcontext
 
-from aiq.authentication.interfaces import RequestManagerBase
-from aiq.authentication.interfaces import ResponseManagerBase
+from fastapi import Request
+
 from aiq.builder.context import AIQContext
 from aiq.builder.context import AIQContextState
 from aiq.builder.workflow import Workflow
@@ -86,8 +86,8 @@ class AIQSessionManager:
     @asynccontextmanager
     async def session(self,
                       user_manager=None,
-                      user_input_callback: Callable[[InteractionPrompt], Awaitable[HumanResponse]] = None,
-                      user_request_callback: Callable[[RequestManagerBase], Awaitable[ResponseManagerBase]] = None):
+                      request: Request = None,
+                      user_input_callback: Callable[[InteractionPrompt], Awaitable[HumanResponse]] = None):
 
         token_user_input = None
         if user_input_callback is not None:
@@ -97,9 +97,7 @@ class AIQSessionManager:
         if user_manager is not None:
             token_user_manager = self._context_state.user_manager.set(user_manager)
 
-        token_user_request = None
-        if user_request_callback is not None:
-            token_user_request = self._context_state.user_request_callback.set(user_request_callback)
+        self.set_request_attributes(request)
 
         try:
             yield self
@@ -108,8 +106,6 @@ class AIQSessionManager:
                 self._context_state.user_manager.reset(token_user_manager)
             if token_user_input is not None:
                 self._context_state.user_input_callback.reset(token_user_input)
-            if token_user_request is not None:
-                self._context_state.user_request_callback.reset(token_user_request)
 
     @asynccontextmanager
     async def run(self, message):
@@ -123,3 +119,22 @@ class AIQSessionManager:
 
             async with self._workflow.run(message) as runner:
                 yield runner
+
+    def set_request_attributes(self, request: Request) -> None:
+        """
+        Extracts and sets request attributes from an HTTP request.
+        If request is None, no attributes are set.
+        """
+        if request is None:
+            return
+
+        self._context.metadata._request.method = request.method
+        self._context.metadata._request.url_path = request.url.path
+        self._context.metadata._request.url_port = request.url.port
+        self._context.metadata._request.url_scheme = request.url.scheme
+        self._context.metadata._request.headers = request.headers
+        self._context.metadata._request.query_params = request.query_params
+        self._context.metadata._request.path_params = request.path_params
+        self._context.metadata._request.client_host = request.client.host
+        self._context.metadata._request.client_port = request.client.port
+        self._context.metadata._request.cookies = request.cookies

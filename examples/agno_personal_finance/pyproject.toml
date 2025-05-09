@@ -9,11 +9,11 @@ root = "../.."
 name = "aiq_agno_personal_finance"
 dynamic = ["version"]
 dependencies = [
-  "aiqtoolkit[agno]",
+  "aiqtoolkit[agno]~=1.1",
   "openai~=1.66",
   "litellm~=1.63.14"
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 description = "Custom AIQ Toolkit Workflow using Agno for personal finance"
 classifiers = ["Programming Language :: Python"]
 
