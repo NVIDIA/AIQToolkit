@@ -27,7 +27,7 @@ This is a simple example RAG application to showcase how one can configure and u
 ## Quickstart: RAG with Milvus
 
 ### Installation and Setup
-If you have not already done so, follow the instructions in the [Install Guide](../../docs/source/intro/install.md) to create the development environment and install AIQ Toolkit, and follow the [Obtaining API Keys](../../docs/source/intro/get-started.md#obtaining-api-keys) instructions to obtain an NVIDIA API key.
+If you have not already done so, follow the instructions in the [Install Guide](../../docs/source/quick-start/installing.md#install-from-source) to create the development environment and install AIQ Toolkit, and follow the [Obtaining API Keys](../../docs/source/quick-start/installing.md#obtaining-api-keys) instructions to obtain an NVIDIA API key.
 
 1) Start the docker compose [Skip this step if you already have Milvus running]
     ```bash
@@ -40,7 +40,7 @@ If you have not already done so, follow the instructions in the [Install Guide](
     export NVIDIA_API_KEY=<YOUR API KEY HERE>
     ```
 
-    Verify whether `lxml` is installed in your current environment. If it’s not installed, simply install it using `pip install lxml`. Next, execute the `bootstrap_milvus.sh` script as illustrated below.
+    Verify whether `lxml` is installed in your current environment. If it’s not installed, simply install it using `uv pip install lxml`. Next, execute the `bootstrap_milvus.sh` script as illustrated below.
     ```bash
     source .venv/bin/activate
     examples/simple_rag/ingestion/bootstrap_milvus.sh
@@ -522,7 +522,7 @@ This workflow can be further enhanced by adding additional tools. Included with 
 ```bash
 uv pip install -e '.[langchain]'
 ```
-Prior to using the `tavily_internet_search` tool, create an account at [`tavily.com``](https://tavily.com/) and obtain an API key. Once obtained, set the `TAVILY_API_KEY` environment variable to the API key:
+Prior to using the `tavily_internet_search` tool, create an account at [`tavily.com`](https://tavily.com/) and obtain an API key. Once obtained, set the `TAVILY_API_KEY` environment variable to the API key:
 ```bash
 export TAVILY_API_KEY=<YOUR_TAVILY_API_KEY>
 ```
