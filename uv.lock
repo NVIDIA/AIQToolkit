@@ -633,6 +633,7 @@ name = "aiqtoolkit-langchain"
 source = { editable = "packages/aiqtoolkit_langchain" }
 dependencies = [
     { name = "aiqtoolkit" },
+    { name = "langchain-aws" },
     { name = "langchain-core" },
     { name = "langchain-milvus" },
     { name = "langchain-nvidia-ai-endpoints" },
@@ -643,6 +644,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiqtoolkit", editable = "." },
+    { name = "langchain-aws", specifier = "~=0.2.1" },
     { name = "langchain-core", specifier = "~=0.3.7" },
     { name = "langchain-milvus", specifier = "~=0.1.5" },
     { name = "langchain-milvus", specifier = "~=0.1.8" },
@@ -659,6 +661,7 @@ dependencies = [
     { name = "llama-index" },
     { name = "llama-index-core" },
     { name = "llama-index-embeddings-nvidia" },
+    { name = "llama-index-llms-bedrock" },
     { name = "llama-index-llms-nvidia" },
     { name = "llama-index-readers-file" },
 ]
@@ -669,6 +672,7 @@ requires-dist = [
     { name = "llama-index", specifier = "==0.12.21" },
     { name = "llama-index-core", specifier = "==0.12.21" },
     { name = "llama-index-embeddings-nvidia", specifier = "==0.3.1" },
+    { name = "llama-index-llms-bedrock", specifier = "==0.3.8" },
     { name = "llama-index-llms-nvidia", specifier = "==0.3.1" },
     { name = "llama-index-readers-file", specifier = "==0.4.4" },
 ]
@@ -2110,11 +2114,14 @@ wheels = [
 name = "gql"
 version = "3.5.2"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12.4' and sys_platform != 'linux'",
+]
 dependencies = [
-    { name = "anyio" },
-    { name = "backoff" },
-    { name = "graphql-core" },
-    { name = "yarl" },
+    { name = "anyio", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
+    { name = "backoff", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
+    { name = "graphql-core", version = "3.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
+    { name = "yarl", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/49/ef/5298d9d628b6a54b3b810052cb5a935d324fe28d9bfdeb741733d5c2446b/gql-3.5.2.tar.gz", hash = "sha256:07e1325b820c8ba9478e95de27ce9f23250486e7e79113dbb7659a442dc13e74", size = 180502 }
 wheels = [
@@ -2123,11 +2130,11 @@ wheels = [
 
 [package.optional-dependencies]
 aiohttp = [
-    { name = "aiohttp" },
+    { name = "aiohttp", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
 ]
 requests = [
-    { name = "requests" },
-    { name = "requests-toolbelt" },
+    { name = "requests", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
+    { name = "requests-toolbelt", marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
 ]
 
 [[package]]
@@ -6122,7 +6129,8 @@ name = "strawberry-graphql"
 version = "0.243.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "graphql-core" },
+    { name = "graphql-core", version = "3.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
+    { name = "graphql-core", version = "3.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12.4' or sys_platform == 'linux'" },
     { name = "python-dateutil" },
     { name = "typing-extensions" },
 ]
@@ -6734,7 +6742,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diskcache" },
     { name = "emoji" },
-    { name = "gql", extra = ["aiohttp", "requests"] },
+    { name = "gql", version = "3.5.0", source = { registry = "https://pypi.org/simple" }, extra = ["aiohttp", "requests"], marker = "python_full_version < '3.12.4' or sys_platform == 'linux'" },
+    { name = "gql", version = "3.5.2", source = { registry = "https://pypi.org/simple" }, extra = ["aiohttp", "requests"], marker = "python_full_version >= '3.12.4' and sys_platform != 'linux'" },
     { name = "jsonschema" },
     { name = "nest-asyncio" },
     { name = "numpy" },
