@@ -13,14 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import time
 import uuid
 
+import httpx
+
+from aiq.data_models.api_server import AuthenticatedRequest
 from aiq.data_models.interactive import HumanPrompt
 from aiq.data_models.interactive import HumanResponse
 from aiq.data_models.interactive import InteractionPrompt
 from aiq.data_models.interactive import InteractionResponse
 from aiq.data_models.interactive import InteractionStatus
+
+logger = logging.getLogger(__name__)
 
 
 class AIQUserInteractionManager:
@@ -69,3 +75,41 @@ class AIQUserInteractionManager:
         sys_human_interaction = InteractionResponse(id=uuid_req, status=status, timestamp=timestamp, content=resp)
 
         return sys_human_interaction
+
+    async def make_api_request(self,
+                               url: str,
+                               http_method: str,
+                               authentication_provider: str | None = None,
+                               headers: dict | None = None,
+                               query_params: dict | None = None,
+                               body_data: dict | None = None) -> httpx.Response | None:
+        """
+        Args: # TODO EE: Update doc strings, error handling and validation logic.
+            url (str | httpx.URL): The base URL to which the request will be sent.
+            http_method (str | HTTPMethod): The HTTP method to use for the request (e.g., "GET", "POST").
+            authentication_provider( str | None): The name of the registered authentication provider to make an
+            authenticated request.
+            headers (dict | None): Optional dictionary of HTTP headers.
+            query_params (dict | None): Optional dictionary of query parameters.
+            body_data (dict | None): Optional dictionary representing the request body.
+        Returns:
+            httpx.Response | None: _description_
+        """
+        try:
+
+            authenticated_request: AuthenticatedRequest = AuthenticatedRequest(
+                url_path=url,
+                method=http_method,
+                authentication_provider=authentication_provider,
+                headers=headers,
+                query_params=query_params,
+                body_data=body_data)
+
+            response: httpx.Response | None = await self._context_state.user_request_callback.get()(
+                authenticated_request)
+
+        except NotImplementedError as e:
+            logger.error("Error while making API request: %s", str(e), exc_info=True)
+            return None
+
+        return response
