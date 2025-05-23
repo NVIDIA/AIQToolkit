@@ -40,12 +40,13 @@ class JobStatus(str, Enum):
 class JobInfo(BaseModel):
     job_id: str
     status: JobStatus
-    config_file: str
+    config_file: str | None
     error: str | None
     output_path: str | None
     created_at: datetime
     updated_at: datetime
     expiry_seconds: int
+    output: BaseModel | None = None
 
 
 class JobStore:
@@ -60,7 +61,10 @@ class JobStore:
     def __init__(self):
         self._jobs = {}
 
-    def create_job(self, config_file: str, job_id: str | None = None, expiry_seconds: int = DEFAULT_EXPIRY) -> str:
+    def create_job(self,
+                   config_file: str | None = None,
+                   job_id: str | None = None,
+                   expiry_seconds: int = DEFAULT_EXPIRY) -> str:
         if job_id is None:
             job_id = str(uuid4())
 
@@ -80,7 +84,12 @@ class JobStore:
         logger.info("Created new job %s with config %s", job_id, config_file)
         return job_id
 
-    def update_status(self, job_id: str, status: str, error: str | None = None, output_path: str | None = None):
+    def update_status(self,
+                      job_id: str,
+                      status: str,
+                      error: str | None = None,
+                      output_path: str | None = None,
+                      output: BaseModel | None = None):
         if job_id not in self._jobs:
             raise ValueError(f"Job {job_id} not found")
 
@@ -89,6 +98,7 @@ class JobStore:
         job.error = error
         job.output_path = output_path
         job.updated_at = datetime.now(UTC)
+        job.output = output
 
     def get_status(self, job_id: str) -> JobInfo | None:
         return self._jobs.get(job_id)
@@ -145,6 +155,7 @@ class JobStore:
             expires_at = self.get_expires_at(job)
             if expires_at and now > expires_at:
                 expired_ids.append(job_id)
+                # TODO: JobInfo should contain a reference to the task so that it can be cancelled if needed
                 # cleanup output dir if present
                 if job.output_path:
                     logger.info("Cleaning up output directory for job %s at %s", job_id, job.output_path)
@@ -156,6 +167,4 @@ class JobStore:
                         shutil.rmtree(job.output_path)
 
         for job_id in expired_ids:
-            # cleanup output dir if present
-
             del self._jobs[job_id]
