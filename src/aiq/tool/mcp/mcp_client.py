@@ -16,12 +16,18 @@
 from __future__ import annotations
 
 import logging
+from abc import ABC
+from abc import abstractmethod
+from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Any
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent
 from pydantic import BaseModel
 from pydantic import Field
@@ -83,49 +89,68 @@ def model_from_mcp_schema(name: str, mcp_input_schema: dict) -> type[BaseModel]:
     return create_model(f"{_generate_valid_classname(name)}InputSchema", **schema_dict)
 
 
-class MCPSSEClient:
+class MCPBaseClient(ABC):
     """
-    Client for creating a session and connecting to an MCP server using SSE
-
-    Args:
-      url (str): The url of the MCP server
+    Base client for creating a session and connecting to an MCP server
     """
 
-    def __init__(self, url: str):
-        self.url = url
-
-    @asynccontextmanager
-    async def connect_to_sse_server(self):
-        """
-        Establish a session with an MCP SSE server within an aync context
-        """
-        async with sse_client(url=self.url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
-
-
-class MCPBuilder(MCPSSEClient):
-    """
-    Builder class used to connect to an MCP Server and generate ToolClients
-
-    Args:
-        url (str): The url of the MCP server
-    """
-
-    def __init__(self, url):
-        super().__init__(url)
+    def __init__(self, client_type: str = 'sse'):
         self._tools = None
+        self._client_type = client_type.lower()
+        if self._client_type not in ['sse', 'stdio', 'streamable-http']:
+            raise ValueError("client_type must be either 'sse', 'stdio' or 'streamable-http'")
+
+        self._exit_stack: AsyncExitStack | None = None
+
+        self._session: ClientSession | None = None
+
+    @property
+    def client_type(self) -> str:
+        return self._client_type
+
+    async def __aenter__(self):
+        if self._exit_stack:
+            raise RuntimeError("MCPBaseClient already initialized. Use async with to initialize.")
+
+        self._exit_stack = AsyncExitStack()
+
+        self._session = await self._exit_stack.enter_async_context(self.connect_to_server())
+
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+
+        if not self._exit_stack:
+            raise RuntimeError("MCPBaseClient not initialized. Use async with to initialize.")
+
+        await self._exit_stack.aclose()
+        self._session = None
+        self._exit_stack = None
+
+    @abstractmethod
+    @asynccontextmanager
+    async def connect_to_server(self):
+        """
+        Establish a session with an MCP server within an async context
+        """
+        pass
 
     async def get_tools(self):
         """
         Retrieve a dictionary of all tools served by the MCP server.
         """
-        async with self.connect_to_sse_server() as session:
-            response = await session.list_tools()
+
+        if not self._session:
+            raise RuntimeError("MCPBaseClient not initialized. Use async with to initialize.")
+
+        response = await self._session.list_tools()
 
         return {
-            tool.name: MCPToolClient(self.url, tool.name, tool.description, tool_input_schema=tool.inputSchema)
+            tool.name:
+                MCPToolClient(session=self._session,
+                              tool_name=tool.name,
+                              tool_description=tool.description,
+                              tool_input_schema=tool.inputSchema)
             for tool in response.tools
         }
 
@@ -142,36 +167,144 @@ class MCPBuilder(MCPSSEClient):
         Raise:
             ValueError if no tool is available with that name.
         """
+        if not self._exit_stack:
+            raise RuntimeError("MCPBaseClient not initialized. Use async with to initialize.")
+
         if not self._tools:
             self._tools = await self.get_tools()
 
         tool = self._tools.get(tool_name)
         if not tool:
-            raise ValueError(f"Tool {tool_name} not available at {self.url}")
+            raise ValueError(f"Tool {tool_name} not available")
         return tool
 
     async def call_tool(self, tool_name: str, tool_args: dict | None):
-        async with self.connect_to_sse_server() as session:
-            result = await session.call_tool(tool_name, tool_args)
-            return result
+        if not self._session:
+            raise RuntimeError("MCPBaseClient not initialized. Use async with to initialize.")
+
+        result = await self._session.call_tool(tool_name, tool_args)
+        return result
 
 
-class MCPToolClient(MCPSSEClient):
+class MCPSSEClient(MCPBaseClient):
+    """
+    Client for creating a session and connecting to an MCP server using SSE
+
+    Args:
+      url (str): The url of the MCP server
+      client_type (str): The type of client to use ('sse' or 'stdio')
+    """
+
+    def __init__(self, url: str, client_type: str = 'sse'):
+        super().__init__(client_type)
+        self._url = url
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @asynccontextmanager
+    async def connect_to_server(self):
+        """
+        Establish a session with an MCP SSE server within an async context
+        """
+        async with sse_client(url=self._url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+
+
+class MCPStdioClient(MCPBaseClient):
+    """
+    Client for creating a session and connecting to an MCP server using stdio
+
+    Args:
+      command (str): The command to run
+      args (list[str] | None): Additional arguments for the command
+      env (dict[str, str] | None): Environment variables to set for the process
+      client_type (str): The type of client to use ('sse' or 'stdio')
+    """
+
+    def __init__(self,
+                 command: str,
+                 args: list[str] | None = None,
+                 env: dict[str, str] | None = None,
+                 client_type: str = 'stdio'):
+        super().__init__(client_type)
+        self._command = command
+        self._args = args
+        self._env = env
+
+    @property
+    def command(self) -> str:
+        return self._command
+
+    @property
+    def args(self) -> list[str] | None:
+        return self._args
+
+    @property
+    def env(self) -> dict[str, str] | None:
+        return self._env
+
+    @asynccontextmanager
+    async def connect_to_server(self):
+        """
+        Establish a session with an MCP server via stdio within an async context
+        """
+
+        server_params = StdioServerParameters(command=self._command, args=self._args or [], env=self._env)
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+
+
+class MCPStreamableHTTPClient(MCPBaseClient):
+    """
+    Client for creating a session and connecting to an MCP server using streamable-http
+    """
+
+    def __init__(self, url: str, client_type: str = 'streamable-http'):
+        super().__init__(client_type)
+
+        self._url = url
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @asynccontextmanager
+    async def connect_to_server(self):
+        """
+        Establish a session with an MCP server via streamable-http within an async context
+        """
+        async with streamablehttp_client(url=self._url) as (read, write, get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+
+
+class MCPToolClient:
     """
     Client wrapper used to call an MCP tool.
 
     Args:
-        url (str): The url of the MCP server
+        connect_fn (callable): Function that returns an async context manager for connecting to the server
         tool_name (str): The name of the tool to wrap
         tool_description (str): The description of the tool provided by the MCP server.
         tool_input_schema (dict): The input schema for the tool.
     """
 
-    def __init__(self, url: str, tool_name: str, tool_description: str | None, tool_input_schema: dict | None = None):
-        super().__init__(url)
+    def __init__(self,
+                 session: ClientSession,
+                 tool_name: str,
+                 tool_description: str | None,
+                 tool_input_schema: dict | None = None):
+        self._session = session
         self._tool_name = tool_name
         self._tool_description = tool_description
-        self._input_schema = model_from_mcp_schema(self._tool_name, tool_input_schema) if tool_input_schema else None
+        self._input_schema = (model_from_mcp_schema(self._tool_name, tool_input_schema) if tool_input_schema else None)
 
     @property
     def name(self):
@@ -207,14 +340,19 @@ class MCPToolClient(MCPSSEClient):
         Args:
             tool_args (dict[str, Any]): A dictionary of key value pairs to serve as inputs for the MCP tool.
         """
-        async with self.connect_to_sse_server() as session:
-            result = await session.call_tool(self._tool_name, tool_args)
+        result = await self._session.call_tool(self._tool_name, tool_args)
 
         output = []
+
         for res in result.content:
             if isinstance(res, TextContent):
                 output.append(res.text)
             else:
                 # Log non-text content for now
                 logger.warning("Got not-text output from %s of type %s", self.name, type(res))
-        return "\n".join(output)
+        result_str = "\n".join(output)
+
+        if result.isError:
+            raise RuntimeError(result_str)
+
+        return result_str
