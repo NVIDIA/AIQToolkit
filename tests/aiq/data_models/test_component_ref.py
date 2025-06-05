@@ -21,12 +21,14 @@ from aiq.data_models.component_ref import EmbedderRef
 from aiq.data_models.component_ref import FunctionRef
 from aiq.data_models.component_ref import LLMRef
 from aiq.data_models.component_ref import MemoryRef
+from aiq.data_models.component_ref import ObjectStoreRef
 from aiq.data_models.component_ref import RetrieverRef
 from aiq.data_models.component_ref import generate_instance_id
 from aiq.data_models.embedder import EmbedderBaseConfig
 from aiq.data_models.function import FunctionBaseConfig
 from aiq.data_models.llm import LLMBaseConfig
 from aiq.data_models.memory import MemoryBaseConfig
+from aiq.data_models.object_store import ObjectStoreBaseConfig
 from aiq.data_models.retriever import RetrieverBaseConfig
 
 
@@ -52,6 +54,7 @@ def test_component_ref_type_checks():
         LLMRef: ComponentGroup.LLMS,
         EmbedderRef: ComponentGroup.EMBEDDERS,
         MemoryRef: ComponentGroup.MEMORY,
+        ObjectStoreRef: ComponentGroup.OBJECT_STORES,
         RetrieverRef: ComponentGroup.RETRIEVERS
     }
 
@@ -72,6 +75,7 @@ def test_component_ref_pydantic_validation():
         LLMBaseConfig: LLMRef,
         EmbedderBaseConfig: EmbedderRef,
         MemoryBaseConfig: MemoryRef,
+        ObjectStoreBaseConfig: ObjectStoreRef,
         RetrieverBaseConfig: RetrieverRef
     }
 
