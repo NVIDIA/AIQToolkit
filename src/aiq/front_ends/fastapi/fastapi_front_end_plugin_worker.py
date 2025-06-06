@@ -20,6 +20,8 @@ import time
 import typing
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Awaitable
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -35,11 +37,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic import Field
 
+from aiq.authentication.request_manager import RequestManager
+from aiq.authentication.response_manager import ResponseManager
+from aiq.authentication.utils import execute_api_request_server_http
 from aiq.builder.workflow_builder import WorkflowBuilder
 from aiq.data_models.api_server import AIQChatRequest
 from aiq.data_models.api_server import AIQChatResponse
 from aiq.data_models.api_server import AIQChatResponseChunk
 from aiq.data_models.api_server import AIQResponseIntermediateStep
+from aiq.data_models.authentication import AuthenticationEndpoint
 from aiq.data_models.config import AIQConfig
 from aiq.eval.config import EvaluationRunOutput
 from aiq.eval.evaluate import EvaluationRun
@@ -81,7 +87,6 @@ class FastApiFrontEndPluginWorkerBase(ABC):
 
     @property
     def front_end_config(self) -> FastApiFrontEndConfig:
-
         return self._front_end_config
 
     def build_app(self) -> FastAPI:
@@ -116,7 +121,12 @@ class FastApiFrontEndPluginWorkerBase(ABC):
 
         aiq_app = FastAPI(lifespan=lifespan)
 
+        # Configure app CORS.
         self.set_cors_config(aiq_app)
+
+        @aiq_app.middleware("http")
+        async def authentication_log_filter(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
+            return await self._suppress_authentication_logs(request, call_next)
 
         return aiq_app
 
@@ -152,6 +162,25 @@ class FastApiFrontEndPluginWorkerBase(ABC):
             **cors_kwargs,
         )
 
+    async def _suppress_authentication_logs(self, request: Request,
+                                            call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        """
+        Intercepts authentication request and supreses logs that contain sensitive data.
+        """
+        from aiq.utils.log_utils import LogFilter
+
+        logs_to_suppress: list[str] = [
+            AuthenticationEndpoint.REDIRECT_URI.value, AuthenticationEndpoint.PROMPT_REDIRECT_URI.value
+        ]
+
+        logging.getLogger("uvicorn.access").addFilter(LogFilter(logs_to_suppress))
+        try:
+            response = await call_next(request)
+        finally:
+            logging.getLogger("uvicorn.access").removeFilter(LogFilter(logs_to_suppress))
+
+        return response
+
     @abstractmethod
     async def configure(self, app: FastAPI, builder: WorkflowBuilder):
         pass
@@ -167,6 +196,11 @@ class RouteInfo(BaseModel):
 
 
 class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
+
+    def __init__(self, config: AIQConfig):
+        self._request_manager: RequestManager = RequestManager()
+        self._response_manager: ResponseManager = ResponseManager()
+        super().__init__(config)
 
     @staticmethod
     async def _periodic_cleanup(name: str, job_store: JobStore, sleep_time_sec: int = 300):
@@ -194,6 +228,16 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
                             self._periodic_cleanup(name=name, job_store=job_store, sleep_time_sec=sleep_time_sec)))
                     self._cleanup_tasks.append(attr_name)
 
+    @property  # TODO EE: TBD
+    def request_manager(self) -> RequestManager:
+        """Get the RequestManager instance."""
+        return self._request_manager
+
+    @request_manager.setter  # TODO EE: TBD
+    def request_manager(self, request_manager: RequestManager) -> None:
+        """Set the RequestManager instance."""
+        self._request_manager = request_manager
+
     def get_step_adaptor(self) -> StepAdaptor:
 
         return StepAdaptor(self.front_end_config.step_adaptor)
@@ -209,6 +253,7 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
 
         await self.add_default_route(app, AIQSessionManager(builder.build()))
         await self.add_evaluate_route(app, AIQSessionManager(builder.build()))
+        await self.add_authorization_route(app)
 
         for ep in self.front_end_config.endpoints:
 
@@ -442,7 +487,8 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
 
                 response.headers["Content-Type"] = "application/json"
 
-                async with session_manager.session(request=request):
+                async with session_manager.session(request=request,
+                                                   user_request_callback=execute_api_request_server_http):
 
                     return await generate_single_response(None, session_manager, result_type=result_type)
 
@@ -452,7 +498,8 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
 
             async def get_stream(request: Request):
 
-                async with session_manager.session(request=request):
+                async with session_manager.session(request=request,
+                                                   user_request_callback=execute_api_request_server_http):
 
                     return StreamingResponse(headers={"Content-Type": "text/event-stream; charset=utf-8"},
                                              content=generate_streaming_response_as_str(
@@ -486,7 +533,8 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
 
                 response.headers["Content-Type"] = "application/json"
 
-                async with session_manager.session(request=request):
+                async with session_manager.session(request=request,
+                                                   user_request_callback=execute_api_request_server_http):
 
                     return await generate_single_response(payload, session_manager, result_type=result_type)
 
@@ -624,6 +672,7 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
                 return _job_status_to_response(job)
 
         if (endpoint.path):
+
             if (endpoint.method == "GET"):
 
                 app.add_api_route(
@@ -768,3 +817,104 @@ class FastApiFrontEndPluginWorker(FastApiFrontEndPluginWorkerBase):
 
             else:
                 raise ValueError(f"Unsupported method {endpoint.method}")
+
+    async def add_authorization_route(self, app: FastAPI):
+
+        from datetime import datetime
+        from datetime import timedelta
+        from datetime import timezone
+
+        import httpx
+        from fastapi.responses import JSONResponse
+
+        from aiq.authentication.credentials_manager import _CredentialsManager
+        from aiq.authentication.exceptions import OAuthCodeFlowError
+        from aiq.data_models.authentication import AccessCodeTokenRequest
+        from aiq.data_models.authentication import HTTPMethod
+        from aiq.data_models.authentication import OAuth2Config
+        from aiq.data_models.authentication import PromptRedirectRequest
+
+        async def redirect_uri(request: Request):
+
+            authorization_code: str | None = request.query_params.get("code")
+            state: str | None = request.query_params.get("state")
+
+            if not (authorization_code and state):
+                raise OAuthCodeFlowError("Authorization code and state not provided by authorization provider.")
+
+            authentication_provider: OAuth2Config | None = _CredentialsManager()._get_authentication_provider_by_state(
+                state)
+
+            if authentication_provider is None:
+                raise OAuthCodeFlowError(
+                    "Authorization provider not found by state provided by authorization provider.")
+
+            # Build Token HTTP Request
+            redirect_uri: str = (f"{authentication_provider.client_server_url}"
+                                 f"{FastApiFrontEndConfig().authorization.path}"
+                                 f"{AuthenticationEndpoint.REDIRECT_URI.value}")
+
+            data = AccessCodeTokenRequest(client_id=authentication_provider.client_id,
+                                          client_secret=authentication_provider.client_secret,
+                                          code=authorization_code,
+                                          redirect_uri=redirect_uri)
+            token_url: str = authentication_provider.authorization_token_url
+
+            headers: httpx.Headers = httpx.Headers({"Content-Type": "application/json"})
+
+            # Send Token HTTP Request
+            response: httpx.Response | None = await self._request_manager._send_request(
+                url=token_url, http_method=HTTPMethod.POST.value, headers=headers, body_data=data.model_dump())
+            if response is None:
+                raise OAuthCodeFlowError(
+                    "Invalid response received while exchanging authorization code for access token.")
+
+            if not response.status_code == 200:
+                await self._response_manager._handle_oauth_authorization_response_codes(
+                    response, authentication_provider)
+
+            if response.json().get("access_token") is None:
+                raise OAuthCodeFlowError("No access token provided.")
+
+            if response.json().get("expires_in") is None:
+                raise OAuthCodeFlowError("No access token provided.")
+
+            # Claim the access token and the expiration time.
+            authentication_provider.access_token = response.json().get("access_token")
+            authentication_provider.access_token_expires_in = (datetime.now(timezone.utc) +
+                                                               timedelta(seconds=response.json().get("expires_in")))
+
+            # Claim the refresh token if the refresh token is available.
+            if response.json().get("refresh_token"):
+                authentication_provider.refresh_token = response.json().get("refresh_token")
+
+            await _CredentialsManager()._set_oauth_credentials()
+
+            return JSONResponse({"message": "Access token successfully retrieved."})
+
+        async def prompt_redirect_uri(request: Request, prompt_request_schema: PromptRedirectRequest):
+
+            authentication_provider: OAuth2Config | None = _CredentialsManager(
+            )._get_authentication_provider_by_consent_prompt_key(prompt_request_schema.consent_prompt_key)
+
+            if (authentication_provider is None):
+                raise HTTPException(status_code=403, detail="Invalid Consent Prompt Key.")
+
+            location_url: str = authentication_provider.consent_prompt_location_url
+
+            await _CredentialsManager()._set_consent_prompt_url()
+
+            return JSONResponse(content={"redirect_url": location_url})
+
+        if self.front_end_config.authorization.path:
+            app.add_api_route(
+                path=f"{self.front_end_config.authorization.path}{AuthenticationEndpoint.REDIRECT_URI.value}",
+                endpoint=redirect_uri,
+                methods=["GET"],
+                description="Handles the authorization code and state returned from the OAuth2.0 provider.")
+
+            app.add_api_route(
+                path=f"{self.front_end_config.authorization.path}{AuthenticationEndpoint.PROMPT_REDIRECT_URI.value}",
+                endpoint=prompt_redirect_uri,
+                methods=["POST", "OPTIONS"],
+                description="Returns the consent prompt location URI to the frontend to continue the OAuth2.0 flow.")

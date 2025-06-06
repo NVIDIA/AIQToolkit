@@ -20,16 +20,19 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 from fastapi import WebSocket
 from fastapi import WebSocketException
 from starlette.endpoints import WebSocketEndpoint
 from starlette.websockets import WebSocketDisconnect
 
+from aiq.authentication.exceptions import APIRequestError
 from aiq.data_models.api_server import AIQChatRequest
 from aiq.data_models.api_server import AIQChatResponse
 from aiq.data_models.api_server import AIQChatResponseChunk
 from aiq.data_models.api_server import AIQResponsePayloadOutput
 from aiq.data_models.api_server import AIQResponseSerializable
+from aiq.data_models.api_server import AuthenticatedRequest
 from aiq.data_models.api_server import WebSocketMessageStatus
 from aiq.data_models.api_server import WorkflowSchemaType
 from aiq.front_ends.fastapi.message_handler import MessageHandler
@@ -113,8 +116,8 @@ class AIQWebSocket(WebSocketEndpoint):
                                result_type: type | None = None,
                                output_type: type | None = None) -> None:
 
-        async with self._session_manager.session(
-                user_input_callback=self._message_handler.human_interaction) as session:
+        async with self._session_manager.session(user_input_callback=self._message_handler.human_interaction,
+                                                 user_request_callback=self.execute_api_request_websocket) as session:
 
             async for value in generate_streaming_response(payload,
                                                            session_manager=session,
@@ -146,3 +149,41 @@ class AIQWebSocket(WebSocketEndpoint):
     async def process_chat(self, payload: AIQChatRequest):
 
         return await self._process_message(payload, result_type=AIQChatResponse)
+
+    async def execute_api_request_websocket(self, request: AuthenticatedRequest) -> httpx.Response | None:
+        """
+        Callback function that executes an API request in websocket mode using the provided authenticated request.
+
+        Args:
+            request (AuthenticatedRequest): The authenticated request to be executed.
+
+        Returns:
+            httpx.Response | None: The response from the API request, or None if an error occurs.
+        """
+        from aiq.authentication.request_manager import RequestManager
+        from aiq.data_models.authentication import ExecutionMode
+
+        request_manager: RequestManager = RequestManager()
+        request_manager.response_manager.message_handler = self._message_handler
+
+        response: httpx.Response | None = None
+
+        request_manager.authentication_manager._set_execution_mode(ExecutionMode.SERVER)
+
+        try:
+
+            response = await request_manager._send_request(url=request.url_path,
+                                                           http_method=request.method,
+                                                           authentication_provider=request.authentication_provider,
+                                                           headers=request.headers,
+                                                           query_params=request.query_params,
+                                                           body_data=request.body_data)
+
+            if response is None:
+                raise APIRequestError("An unexpected error occured while sending request.")
+
+        except APIRequestError as e:
+            logger.error("An error occured during the API request: %s", str(e), exc_info=True)
+            return None
+
+        return response

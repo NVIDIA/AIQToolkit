@@ -25,6 +25,8 @@ from pydantic import ValidationInfo
 from pydantic import ValidatorFunctionWrapHandler
 from pydantic import field_validator
 
+from aiq.authentication.credentials_manager import _CredentialsManager
+from aiq.data_models.authentication import AuthenticationProvider
 from aiq.data_models.evaluate import EvalConfig
 from aiq.data_models.front_end import FrontEndBaseConfig
 from aiq.data_models.function import EmptyFunctionConfig
@@ -73,6 +75,8 @@ def _process_validation_error(err: ValidationError, handler: ValidatorFunctionWr
                 registered_keys = GlobalTypeRegistry.get().get_registered_evaluators()
             elif (info.field_name == "front_ends"):
                 registered_keys = GlobalTypeRegistry.get().get_registered_front_ends()
+            elif (info.field_name == "authentication"):
+                registered_keys = GlobalTypeRegistry.get().get_registered_authentication_providers()
 
             else:
                 assert False, f"Unknown field name {info.field_name} in validator"
@@ -248,6 +252,9 @@ class AIQConfig(HashableBaseModel):
     # Workflow Configuration
     workflow: FunctionBaseConfig = EmptyFunctionConfig()
 
+    # Authentication Configuration
+    authentication: dict[str, AuthenticationProvider] = {}
+
     # Evaluation Options
     eval: EvalConfig = EvalConfig()
 
@@ -264,8 +271,21 @@ class AIQConfig(HashableBaseModel):
         stream.write(f"Number of Embedders: {len(self.embedders)}\n")
         stream.write(f"Number of Memory: {len(self.memory)}\n")
         stream.write(f"Number of Retrievers: {len(self.retrievers)}\n")
+        stream.write(f"Number of Authentication Providers: {len(self.authentication)}\n")
 
-    @field_validator("functions", "llms", "embedders", "memory", "retrievers", "workflow", mode="wrap")
+    def model_post_init(self, context: typing.Any) -> None:
+        # Persist the authentication credentials after the model is initialized.
+        if (self.authentication):
+            _CredentialsManager()._swap_authorization_providers(self.authentication)
+
+    @field_validator("functions",
+                     "llms",
+                     "embedders",
+                     "memory",
+                     "retrievers",
+                     "workflow",
+                     "authentication",
+                     mode="wrap")
     @classmethod
     def validate_components(cls, value: typing.Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo):
 
