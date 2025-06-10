@@ -5,7 +5,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,208 +13,153 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 import logging
-from contextlib import asynccontextmanager
-from enum import Enum
-from typing import Any
+from typing import Literal
 
-from mcp import ClientSession
-from mcp.client.sse import sse_client
-from mcp.types import TextContent
 from pydantic import BaseModel
 from pydantic import Field
-from pydantic import create_model
+from pydantic import HttpUrl
+
+from aiq.builder.builder import Builder
+from aiq.builder.function_info import FunctionInfo
+from aiq.cli.register_workflow import register_function
+from aiq.data_models.client_functions import ClientFunctionConfig
+from aiq.data_models.function import FunctionBaseConfig
+from aiq.tool.client_functions import register_client_function_handler
+from aiq.tool.mcp.mcp_client_base import MCPBaseClient
 
 logger = logging.getLogger(__name__)
 
 
-def model_from_mcp_schema(name: str, mcp_input_schema: dict) -> type[BaseModel]:
+class MCPServerConfig(BaseModel):
     """
-    Create a pydantic model from the input schema of the MCP tool
+    Server connection details for MCP client.
+    Supports stdio, sse, and streamable-http transports.
     """
-    _type_map = {
-        "string": str,
-        "number": float,
-        "integer": int,
-        "boolean": bool,
-        "array": list,
-        "null": None,
-        "object": dict,
-    }
+    transport: Literal["stdio", "sse", "streamable-http"] = Field(
+        ..., description="Transport type to connect to the MCP server (stdio, sse, or streamable-http)")
+    url: HttpUrl | None = Field(default=None,
+                                description="URL of the MCP server (for sse or streamable-http transport)")
+    command: str | None = Field(default=None,
+                                description="Command to run for stdio transport (e.g. 'python' or 'docker')")
+    args: list[str] | None = Field(default=None, description="Arguments for the stdio command")
+    env: dict[str, str] | None = Field(default=None, description="Environment variables for the stdio process")
 
-    properties = mcp_input_schema.get("properties", {})
-    schema_dict = {}
+    def model_post_init(self, __context):
+        """Validate that stdio and SSE/Streamable HTTP properties are mutually exclusive."""
+        super().model_post_init(__context)
 
-    def _generate_valid_classname(class_name: str):
-        return class_name.replace('_', ' ').replace('-', ' ').title().replace(' ', '')
-
-    def _generate_field(field_name: str, field_properties: dict[str, Any]) -> tuple:
-        json_type = field_properties.get("type", "string")
-        enum_vals = field_properties.get("enum")
-
-        if enum_vals:
-            enum_name = f"{field_name.capitalize()}Enum"
-            field_type = Enum(enum_name, {item: item for item in enum_vals})
-
-        elif json_type == "object" and "properties" in field_properties:
-            field_type = model_from_mcp_schema(name=field_name, mcp_input_schema=field_properties)
-        elif json_type == "array" and "items" in field_properties:
-            item_properties = field_properties.get("items", {})
-            if item_properties.get("type") == "object":
-                item_type = model_from_mcp_schema(name=field_name, mcp_input_schema=item_properties)
-            else:
-                item_type = _type_map.get(item_properties.get("type", "string"), Any)
-            field_type = list[item_type]
-        else:
-            field_type = _type_map.get(json_type, Any)
-
-        default_value = field_properties.get("default", ...)
-        nullable = field_properties.get("nullable", False)
-        description = field_properties.get("description", "")
-
-        field_type = field_type | None if nullable else field_type
-
-        return field_type, Field(default=default_value, description=description)
-
-    for field_name, field_props in properties.items():
-        schema_dict[field_name] = _generate_field(field_name=field_name, field_properties=field_props)
-    return create_model(f"{_generate_valid_classname(name)}InputSchema", **schema_dict)
+        if self.transport == "stdio":
+            if self.url is not None:
+                raise ValueError("url should not be set when using stdio transport")
+            if not self.command:
+                raise ValueError("command is required when using stdio transport")
+        elif self.transport in ("sse", "streamable-http"):
+            if self.command is not None or self.args is not None or self.env is not None:
+                raise ValueError("command, args, and env should not be set when using sse or streamable-http transport")
+            if not self.url:
+                raise ValueError("url is required when using sse or streamable-http transport")
 
 
-class MCPSSEClient:
+class MCPClientConfig(ClientFunctionConfig, name="mcp_client"):
     """
-    Client for creating a session and connecting to an MCP server using SSE
-
-    Args:
-      url (str): The url of the MCP server
+    Configuration for connecting to an MCP server as a client and exposing selected tools.
+    Supports stdio, sse, and streamable-http transports, as well as tool filtering and aliasing.
     """
+    server: MCPServerConfig = Field(..., description="Server connection details (transport, url/command, etc.)")
+    # TODO: Add tool_filter support
+    tool_filter: dict | list | None = Field(default=None,
+                                            description="Filter or map tools to expose from the server. \
+            Can be a list of tool names or a dict mapping tool names to alias/description.")
 
-    def __init__(self, url: str):
-        self.url = url
-
-    @asynccontextmanager
-    async def connect_to_sse_server(self):
-        """
-        Establish a session with an MCP SSE server within an aync context
-        """
-        async with sse_client(url=self.url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+    def model_post_init(self, __context):
+        super().model_post_init(__context)
+        # ServerConfig already validates mutually exclusive fields
 
 
-class MCPBuilder(MCPSSEClient):
+class MCPSingleToolConfig(FunctionBaseConfig, name="mcp_single_tool"):
+    client: MCPBaseClient = Field(..., description="MCP client to use for the tool")
+    tool_name: str = Field(..., description="Name of the tool to use")
+    tool_description: str | None = Field(default=None, description="Description of the tool")
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+@register_function(config_type=MCPSingleToolConfig)
+async def mcp_single_tool(config: MCPSingleToolConfig, builder: Builder):
+    tool = await config.client.get_tool(config.tool_name)
+    if config.tool_description:
+        tool.set_description(description=config.tool_description)
+    input_schema = tool.input_schema
+
+    logger.info("Configured to use tool: %s from MCP server at %s", tool.name, config.client.server_name)
+
+    def _convert_from_str(input_str: str) -> BaseModel:
+        return input_schema.model_validate_json(input_str)
+
+    async def _response_fn(tool_input: input_schema | None = None, **kwargs) -> str:
+        try:
+            if tool_input:
+                return await tool.acall(tool_input.model_dump())
+            _ = input_schema.model_validate(kwargs)
+            return await tool.acall(kwargs)
+        except Exception as e:
+            return str(e)
+
+    fn = FunctionInfo.create(single_fn=_response_fn,
+                             description=tool.description,
+                             input_schema=input_schema,
+                             converters=[_convert_from_str])
+    yield fn
+
+
+@register_client_function_handler(MCPClientConfig)
+async def mcp_client_function_handler(config: MCPClientConfig, builder: Builder):  # pylint: disable=unused-argument
     """
-    Builder class used to connect to an MCP Server and generate ToolClients
+    Connects to an MCP server, discovers all tools, and adds them as functions to the builder.
 
-    Args:
-        url (str): The url of the MCP server
+    builder: This is the main workflow builder (not the child builder). This is needed because -
+    1. we need access to the builder's lifecycle to add the client to the exit stack
+    2. we dynamically add tools to the builder
+
+    TODO: Add tool_filter support and tool name/description override support
     """
+    from aiq.tool.mcp.mcp_client_base import MCPSSEClient
+    from aiq.tool.mcp.mcp_client_base import MCPStdioClient
+    from aiq.tool.mcp.mcp_client_base import MCPStreamableHTTPClient
 
-    def __init__(self, url):
-        super().__init__(url)
-        self._tools = None
+    # 1. Instantiate the client
+    if config.server.transport == "stdio":
+        client = MCPStdioClient(command=config.server.command, args=config.server.args, env=config.server.env)
+    elif config.server.transport == "sse":
+        client = MCPSSEClient(url=str(config.server.url))
+    elif config.server.transport == "streamable-http":
+        client = MCPStreamableHTTPClient(url=str(config.server.url))
+    else:
+        raise ValueError("Unsupported transport")
 
-    async def get_tools(self):
-        """
-        Retrieve a dictionary of all tools served by the MCP server.
-        """
-        async with self.connect_to_sse_server() as session:
-            response = await session.list_tools()
+    logger.info("Configured to use MCP server at %s", client.server_name)
 
-        return {
-            tool.name: MCPToolClient(self.url, tool.name, tool.description, tool_input_schema=tool.inputSchema)
-            for tool in response.tools
-        }
+    # 2. Connect to the server and find all tools
+    # Store the client in the builder's exit stack to ensure it's cleaned up when the builder is done
+    await builder._get_exit_stack().enter_async_context(client)
 
-    async def get_tool(self, tool_name: str) -> MCPToolClient:
-        """
-        Get an MCP Tool by name.
+    # Find all tools
+    all_tools = await client.get_tools()
 
-        Args:
-            tool_name (str): Name of the tool to load.
-
-        Returns:
-            MCPToolClient for the configured tool.
-
-        Raise:
-            ValueError if no tool is available with that name.
-        """
-        if not self._tools:
-            self._tools = await self.get_tools()
-
-        tool = self._tools.get(tool_name)
-        if not tool:
-            raise ValueError(f"Tool {tool_name} not available at {self.url}")
-        return tool
-
-    async def call_tool(self, tool_name: str, tool_args: dict | None):
-        async with self.connect_to_sse_server() as session:
-            result = await session.call_tool(tool_name, tool_args)
-            return result
+    # 3. Add all tools to the builder dynamically
+    for tool in all_tools.values():
+        await builder.add_function(tool.name,
+                                   MCPSingleToolConfig(
+                                       client=client,
+                                       tool_name=tool.name,
+                                       tool_description=None,
+                                   ))
 
 
-class MCPToolClient(MCPSSEClient):
-    """
-    Client wrapper used to call an MCP tool.
-
-    Args:
-        url (str): The url of the MCP server
-        tool_name (str): The name of the tool to wrap
-        tool_description (str): The description of the tool provided by the MCP server.
-        tool_input_schema (dict): The input schema for the tool.
-    """
-
-    def __init__(self, url: str, tool_name: str, tool_description: str | None, tool_input_schema: dict | None = None):
-        super().__init__(url)
-        self._tool_name = tool_name
-        self._tool_description = tool_description
-        self._input_schema = model_from_mcp_schema(self._tool_name, tool_input_schema) if tool_input_schema else None
-
-    @property
-    def name(self):
-        """Returns the name of the tool."""
-        return self._tool_name
-
-    @property
-    def description(self):
-        """
-        Returns the tool's description. If none was provided. Provides a simple description using the tool's name
-        """
-        if not self._tool_description:
-            return f"MCP Tool {self._tool_name}"
-        return self._tool_description
-
-    @property
-    def input_schema(self):
-        """
-        Returns the tool's input_schema.
-        """
-        return self._input_schema
-
-    def set_description(self, description: str):
-        """
-        Manually define the tool's description using the provided string.
-        """
-        self._tool_description = description
-
-    async def acall(self, tool_args: dict) -> str:
-        """
-        Call the MCP tool with the provided arguments.
-
-        Args:
-            tool_args (dict[str, Any]): A dictionary of key value pairs to serve as inputs for the MCP tool.
-        """
-        async with self.connect_to_sse_server() as session:
-            result = await session.call_tool(self._tool_name, tool_args)
-
-        output = []
-        for res in result.content:
-            if isinstance(res, TextContent):
-                output.append(res.text)
-            else:
-                # Log non-text content for now
-                logger.warning("Got not-text output from %s of type %s", self.name, type(res))
-        return "\n".join(output)
+"""
+TODO:
+- Add tool_filter support
+- Add ClientFunctionConfig to the registry by making mcp_client_function_handler yield an idle function
+- Add a way to get all dynamic tools via a special workflow keyword
+"""
