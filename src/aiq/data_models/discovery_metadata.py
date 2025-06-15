@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import typing
+from collections.abc import Callable
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +32,7 @@ from aiq.data_models.component import AIQComponentEnum
 from aiq.utils.metadata_utils import generate_config_type_docs
 
 if TYPE_CHECKING:
+    from aiq.cli.type_registry import FunctionBuildCallableT
     from aiq.cli.type_registry import ToolWrapperBuildCallableT
     from aiq.data_models.common import TypedBaseModelT
 
@@ -142,6 +144,7 @@ class DiscoveryMetadata(BaseModel):
 
         try:
             module = inspect.getmodule(config_type)
+
             root_package: str = module.__package__.split(".")[0]
             distro_name = DiscoveryMetadata.get_distribution_name(root_package)
 
@@ -168,18 +171,18 @@ class DiscoveryMetadata(BaseModel):
                                  description=description)
 
     @staticmethod
-    def from_fn_wrapper(fn: "ToolWrapperBuildCallableT",
-                        wrapper_type: LLMFrameworkEnum | str,
-                        component_type: AIQComponentEnum = AIQComponentEnum.TOOL_WRAPPER) -> "DiscoveryMetadata":
-        """Generates discovery metadata from function with specified wrapper type.
+    def _from_fn(fn: Callable,
+                 component_name: str,
+                 component_type: AIQComponentEnum = AIQComponentEnum.UNDEFINED) -> "DiscoveryMetadata":
+        """Generates discovery metadata from function with Callable type.
 
         Args:
-            fn (ToolWrapperBuildCallableT): A tool wrapper callable to source component metadata.
-            wrapper_type (LLMFrameworkEnum): The wrapper to apply to the callable to faciliate inter-framwork
-            interoperability.
+            fn (Callable): A function to source component metadata.
+
+            component_name (str): The name of the registered component.
 
             component_type (AIQComponentEnum, optional): The type of the registered component. Defaults to
-            AIQComponentEnum.TOOL_WRAPPER.
+            AIQComponentEnum.UNDEFINED.
 
         Returns:
             DiscoveryMetadata: A an object containing component metadata to facilitate discovery and reuse.
@@ -187,6 +190,7 @@ class DiscoveryMetadata(BaseModel):
 
         try:
             module = inspect.getmodule(fn)
+
             root_package: str = module.__package__.split(".")[0]
             root_package = DiscoveryMetadata.get_distribution_name(root_package)
             try:
@@ -198,14 +202,56 @@ class DiscoveryMetadata(BaseModel):
             logger.exception("Encountered issue extracting module metadata for %s: %s", fn, e, exc_info=True)
             return DiscoveryMetadata(status=DiscoveryStatusEnum.FAILURE)
 
-        if isinstance(wrapper_type, LLMFrameworkEnum):
-            wrapper_type = wrapper_type.value
-
         return DiscoveryMetadata(package=root_package,
                                  version=version,
                                  component_type=component_type,
-                                 component_name=wrapper_type,
+                                 component_name=component_name,
                                  description=fn.__doc__ or "")
+
+    @staticmethod
+    def from_tool_wrapper(fn: "ToolWrapperBuildCallableT",
+                          wrapper_type: LLMFrameworkEnum | str,
+                          component_type: AIQComponentEnum = AIQComponentEnum.TOOL_WRAPPER) -> "DiscoveryMetadata":
+        """Generates discovery metadata from function with specified wrapper type.
+
+        Args:
+            fn (ToolWrapperBuildCallableT): A tool wrapper callable to source component metadata.
+
+            wrapper_type (LLMFrameworkEnum): The wrapper to apply to the callable to faciliate inter-framwork
+            interoperability.
+
+            component_type (AIQComponentEnum, optional): The type of the registered component. Defaults to
+            AIQComponentEnum.TOOL_WRAPPER.
+
+        Returns:
+            DiscoveryMetadata: A an object containing component metadata to facilitate discovery and reuse.
+        """
+        if isinstance(wrapper_type, LLMFrameworkEnum):
+            wrapper_type = wrapper_type.value
+
+        return DiscoveryMetadata._from_fn(fn=fn, component_name=wrapper_type, component_type=component_type)
+
+    @staticmethod
+    def from_fn(fn: "FunctionBuildCallableT",
+                component_name: str,
+                component_type: AIQComponentEnum = AIQComponentEnum.UNDEFINED
+                ) -> "DiscoveryMetadata":
+        """Generates discovery metadata from function with specified function type.
+
+        Args:
+            fn (FunctionBuildCallableT): A function callable to source component metadata.
+
+            component_name (str, optional): The name of the registered component. Defaults to an empty string.
+
+            component_type (AIQComponentEnum, optional): The type of the registered component. Defaults to
+            AIQComponentEnum.UNDEFINED.
+
+        Returns:
+            DiscoveryMetadata: A an object containing component metadata to facilitate discovery and reuse.
+        """
+        return DiscoveryMetadata._from_fn(fn=fn,
+                                          component_name=component_name,
+                                          component_type=component_type)
 
     @staticmethod
     def from_package_name(package_name: str, package_version: str | None) -> "DiscoveryMetadata":
@@ -263,6 +309,7 @@ class DiscoveryMetadata(BaseModel):
 
         try:
             module = inspect.getmodule(config_type)
+
             root_package: str = module.__package__.split(".")[0]
             root_package = DiscoveryMetadata.get_distribution_name(root_package)
             try:
